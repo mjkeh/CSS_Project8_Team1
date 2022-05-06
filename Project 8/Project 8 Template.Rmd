@@ -62,19 +62,118 @@ Fit a SuperLearner model to estimate the probability of someone dying from compl
 \end{enumerate}
 
 ```{r}
+# explore data
+
+glimpse(heart_disease)
+```
+
+```{r}
 # Fit SuperLearner Model
 
 ## sl lib
+listWrappers()
+###select SL.mean,SL.glmnet,SL.ranger, SL.ksvm, SL.biglasso
 
 ## Train/Test split
+heart_disease_split <- initial_split(heart_disease, prop = 3/4)
+
+train <- training(heart_disease_split)
+y_train <- train$mortality
+x_train <- train %>%
+  select(-mortality, -bmi_2, -blood_pressure_2, -chol_2, -blood_pressure_medication_2)
+
+test <- testing(heart_disease_split)
+y_test <- test %>% select(mortality)
+x_test <- test %>%
+  select(-mortality, -bmi_2, -blood_pressure_2, -chol_2, -blood_pressure_medication_2)
+
 
 ## Train SuperLearner
+###1) 
+sl_mean <- SuperLearner(Y = y_train,
+                         X = x_train,
+                         family = binomial(),
+                         SL.library = "SL.mean")
+sl_mean
+
+###2)
+sl_glmenet <- SuperLearner(Y = y_train,
+                         X = x_train,
+                         family = binomial(),
+                         SL.library = "SL.glmnet")
+sl_glmenet
+
+###3)
+sl_ranger <- SuperLearner(Y = y_train,
+                         X = x_train,
+                         family = binomial(),
+                         SL.library = "SL.ranger")
+sl_ranger
+
+###4)
+sl_ksvm <- SuperLearner(Y = y_train,
+                         X = x_train,
+                         family = binomial(),
+                         SL.library = "SL.ksvm")
+sl_ksvm
+
+###5)
+sl_step <- SuperLearner(Y = y_train,
+                         X = x_train,
+                         family = binomial(),
+                         SL.library = "SL.step")
+sl_step
 
 ## Risk and Coefficient of each model
+### SL.mean: 0.2496337  /  SL.glmnet: 0.2366779  / SL.ranger: 0.2308693  /  SL.ksvm: 0.2327669   /  SL.step: 0.236561 
+
 
 ## Discrete winner and superlearner ensemble performance
 
+sl = SuperLearner(Y = y_train,
+                  X = x_train,
+                  family = binomial(),
+                  SL.library = c('SL.mean',
+                                 'SL.glmnet',
+                                 'SL.ranger',
+                                 'SL.ksvm',
+                                 'SL.step'))
+sl
+
+#                   Risk       Coef
+#SL.mean_All   0.2496120 0.00000000
+#SL.glmnet_All 0.2364008 0.09538916
+#SL.ranger_All 0.2307689 0.60412337
+#SL.ksvm_All   0.2330686 0.22250712
+#SL.step_All   0.2365224 0.07798034
+
+### Diescrete winner
+sl_ranger$cvRisk[which.min(sl_ranger$cvRisk)] ## 0.2308693 
+
+
+### Superlearner ensemble
 ## Confusion Matrix
+preds <- predict(sl,
+                 x_test,
+                 onlySL = TRUE)
+
+# start with y_test
+validation <- y_test %>%
+  # add our predictions
+  bind_cols(preds$pred[,1]) %>%
+  # rename columns
+  rename(obs = `mortality`,
+         pred = `...2`) %>%
+  mutate(pred = ifelse(pred >= .5, 
+                           1,
+                           0))
+
+head(validation)
+
+  #matrix
+caret::confusionMatrix(as.factor(validation$pred),
+                       as.factor(validation$obs))
+
 ```
 
 ## Discussion Questions
@@ -82,6 +181,9 @@ Fit a SuperLearner model to estimate the probability of someone dying from compl
 \begin{enumerate}
     \item Why should we, in general, prefer the SuperLearner ensemble to the discrete winner in cross-validation? Or in other words, what is the advantage of "blending" algorithms together and giving them each weights, rather than just using the single best algorithm (with best being defined as minimizing risk)?
 \end{enumerate}
+
+## SuperLearner ensemble uses cross-validation to estimate the performance of multiple machine learning models. It then creates an optimal weighted average of those models, aka an "ensemble", using the test data performance. This approach reduces bias compared to the discrete winner (especially in the case where the model is misspecified) by combining the best performing algorithms together.
+
 
 # Targeted Maximum Likelihood Estimation
 
