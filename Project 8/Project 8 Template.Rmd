@@ -15,9 +15,10 @@ pacman::p_load(
   caret,
   dagitty,
   ggdag,
+  AER,
   here)
 
-heart_disease <- read_csv(here('heart_disease_tmle.csv'))
+heart_disease <- read_csv('heart_disease_tmle.csv')
 ```
 
 # Introduction
@@ -86,8 +87,9 @@ test <- testing(heart_disease_split)
 y_test <- test %>% select(mortality)
 x_test <- test %>%
   select(-mortality, -bmi_2, -blood_pressure_2, -chol_2, -blood_pressure_medication_2)
+```
 
-
+```{r}
 ## Train SuperLearner
 ###1) 
 sl_mean <- SuperLearner(Y = y_train,
@@ -130,14 +132,12 @@ sl_step
 
 ## Discrete winner and superlearner ensemble performance
 
+sl_libs = c('SL.mean','SL.glmnet','SL.ranger','SL.ksvm','SL.step')
+
 sl = SuperLearner(Y = y_train,
                   X = x_train,
                   family = binomial(),
-                  SL.library = c('SL.mean',
-                                 'SL.glmnet',
-                                 'SL.ranger',
-                                 'SL.ksvm',
-                                 'SL.step'))
+                  SL.library = sl_libs)
 sl
 
 #                   Risk       Coef
@@ -146,8 +146,10 @@ sl
 #SL.ranger_All 0.2307689 0.60412337
 #SL.ksvm_All   0.2330686 0.22250712
 #SL.step_All   0.2365224 0.07798034
+```
 
-### Diescrete winner
+```{r}
+### Discrete winner
 sl_ranger$cvRisk[which.min(sl_ranger$cvRisk)] ## 0.2308693 
 
 
@@ -198,9 +200,60 @@ TMLE requires estimating two models:
 
 Using ggdag and daggity, draw a directed acylcic graph (DAG) that describes the relationships between the outcome, treatment, and covariates/predictors. Note, if you think there are covariates that are not related to other variables in the dataset, note this by either including them as freestanding nodes or by omitting them and noting omissions in your discussion.
 
+First, we create the DAG using only the covariates and predictors at Time 1.
 ```{r}
 # DAG for TMLE
+theme_set(theme_dag())
+source("pretty_dag.R")
+
+tmle_dag <- dagify(Mortality ~ BP_Meds,
+                   Mortality ~ Age,
+                   Mortality ~ Cholesterol,
+                   Mortality ~ BMI,
+                   Mortality ~ Income,
+                   Mortality ~ Sex,
+                   BP_Meds ~ BP,
+                   BP_Meds ~ Income,
+                   BP ~ BMI,
+                   BP ~ Race,
+                   BP ~ Income,
+                   BP ~ Age,
+                   Cholesterol ~ BMI,
+                   BMI ~ Income,
+                   BMI ~ U_Lifestyle,
+                   Income ~ Race,
+                   Income ~ Sex,
+                   Income ~ Age,
+                   Income ~ Educ,
+                   Educ ~ Sex,
+                   Educ ~ Race,
+                   U_Lifestyle ~ Educ,
+                   Mortality ~ U_Other,
+                   Mortality ~ U_Lifestyle,
+                   BP ~ U_Lifestyle,
+                   Cholesterol ~ U_Lifestyle,
+                   BP ~ U_Lifestyle,
+                   exposure = "BP_Meds",
+                   outcome = "Mortality") %>%
+  tidy_dagitty() %>%
+  #pretty_dag() %>%
+  ggdag() +
+  geom_dag_edges() +
+  geom_dag_node(aes(color = "BP_Meds")) +
+  geom_dag_text(col = "darkgrey") +
+  theme(legend.position = "none") +
+  scale_color_manual(values=c("darkred", "lightgrey", "darkgrey", "navy"))
+
+tmle_dag
 ```
+### Explaining decisions made in the DAG
+This DAG argues that Mortality is affected by blood pressure, cholesterol, BMI, age, income, sex, blood pressure medication, and unobserved factors. This is because high blood pressure and cholesterol lead to heart attacks and strokes. BMI affects mortality through its effects on blood pressure and cholesterol, *and* independently of those, through their unobserved effects on diseases like diabetes and cancer and through their unobserved impact on likelihood for needing a major surgery (e.g., gastric bypass or knee replacement), which are always dangerous. Age is related to mortality rates. Income affects mortality through unobserved mediators like stress, healthcare access, exposure to violence, and more. Research shows a 10+ life expectancy gap between the poorest and richest Americans. Sex is included because women tend to live longer than men. Blood pressure medication might affect morality by reducing blood pressure. Unobserved factors impacting mortality might include the presence of other diseases and mental illnesses.
+
+Whether or not someone takes blood pressure medication is affected by their blood pressure (are they even eligible to take it?) and income (do they have access to healthcare?).
+
+Blood pressure is affected by BMI, race, income, age, and unobserved factors. Income affects blood pressure indirectly through BMI, since low-income people tend to have higher BMIs because healthy foods cost more, and higher likelihood of living in a food desert, which further limit access to healthy food. I argue that income also directly affects blood pressure through the unobserved variable of stress. Many studies have confirmed that people of African descent have higher rates of hypertension (and earlier ages of onset) than other ethno-racial groups, even controlling for income. Lastly, blood pressure tends to rise as people get older, as an effect of the biological aging process. The unobserved factors I imagine affecting blood pressure are dietary preferences and habits unrelated to constraints posed by income, and whether one smokes. The former factor is also a contributor to BMI and cholesterol. The latter factor is a contributor to mortality more directly.
+
+There are Unobserved predictors that I left out of this model for the sake of visual comprehensibility. For example, there are unobserved predictors of income beyond education, sex, race, and age. Income and education might also affect the unobserved smoking prevalence. Also, there are more predictors of college attendance than sex and race, like childhood household income, presence of learning disabilities, immigration status, and more. And, there are probably more unobserved contributors to high blood pressure than those that I am aware of.
 
 ## TMLE Estimation
 
@@ -212,11 +265,80 @@ Use the `tmle` package to estimate a model for the effect of blood pressure medi
     \item Report the average treatment effect and any other relevant statistics
 \end{enumerate}
 
+```{r}
+# Propensity Model for Treatment (medication): blood_pressure, income_thousands
+# Outcome Model (mortality): age, sex_at_birth, blood_pressure, chol, bmi, income_thousands, blood_pressure_medication, college_educ
+# Not including any variables whose effects on mortality or treatment are fully mediated by observed variables.
+
+# Prepare Data
+data_obs <- heart_disease %>%
+  rename(Y = mortality) %>%
+  rename(A = blood_pressure_medication) %>%
+  select(Y, A, age, sex_at_birth, blood_pressure, chol, bmi, income_thousands, college_educ)
+
+# Outcome
+Y <- data_obs %>% pull(Y)
+
+# Covariates
+W_A <- data_obs %>% select(-Y)
+```
+
+```{r}
+# Fit SL for Q step, initial estimate of the outcome
+#Q <- SuperLearner(Y = Y,
+#                  X = W_A,
+#                  family = binomial(),
+#                  SL.library = sl_libs)
+```
+
+```{r}
+W <- W_A %>% select(-A)
+A <- W_A$A
+
+#g <- SuperLearner(Y = A, 
+#                  X = W, 
+#                  family=binomial(), 
+#                  SL.library=sl_libs)
+```
+
+```{r}
+tmle_fit <-
+  tmle::tmle(Y = Y, 
+           A = A, 
+           W = W, 
+           Q.SL.library = sl_libs, 
+           g.SL.library = sl_libs) 
+
+tmle_fit
+```
+### Result:
+Additive Effect
+   Parameter Estimate:  -0.35408
+   Estimated Variance:  7.0898e-05
+              p-value:  <2e-16
+    95% Conf Interval: (-0.37059, -0.33758) 
+
+ Additive Effect among the Treated
+   Parameter Estimate:  -0.31966
+   Estimated Variance:  0.00014703
+              p-value:  <2e-16
+    95% Conf Interval: (-0.34342, -0.29589) 
+
+ Additive Effect among the Controls
+   Parameter Estimate:  -0.36802
+   Estimated Variance:  6.3477e-05
+              p-value:  <2e-16
+    95% Conf Interval: (-0.38364, -0.35241) 
+
+**Interpretation:** For all subjects, taking blood pressure medication at time 1 is associated with decreased mortality. However, this model does not account for variables at time 2; for that, we need to use the LTMLE method.
+
 ## Discussion Questions
 
 \begin{enumerate}
     \item What is a "double robust" estimator? Why does it provide a guarantee of consistency if either the outcome model or propensity score model is correctly specified? Or in other words, why does mispecifying one of the models not break the analysis? \textbf{Hint}: When answering this question, think about how your introductory statistics courses emphasized using theory to determine the correct outcome model, and in this course how we explored the benefits of matching.
 \end{enumerate}
+**Answer:** TMLE is a double robust estimator because it tries to determine and use the best model for predicting exposure to treatment and the best model for predicting the outcome. That gives us two chances at a correctly specified model, and the way TMLE works, 1 correctly specified model is sufficient. 
+
 
 # LTMLE Estimation
 
@@ -231,7 +353,9 @@ Update your causal diagram to incorporate this new information. \textbf{Note}: I
 \textbf{Hint}: Keep in mind that any of the variables that end in "\_2" are likely affected by both the previous covariates and the first treatment when drawing your DAG.
 
 ```{r}
-# DAG for TMLE
+# DAG for LTMLE
+
+
 ```
 
 ## LTMLE Estimation
