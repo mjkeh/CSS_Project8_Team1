@@ -1,0 +1,464 @@
+---
+title: "Project 8 Template"
+output: pdf_document
+---
+
+```{r}
+# Add to this package list for additional SL algorithms
+pacman::p_load(
+  tidyverse,
+  ggthemes,
+  ltmle,
+  tmle,
+  SuperLearner,
+  tidymodels,
+  caret,
+  dagitty,
+  ggdag,
+  AER,
+  here)
+
+heart_disease <- read_csv('heart_disease_tmle.csv')
+```
+
+# Introduction
+
+Heart disease is the leading cause of death in the United States, and treating it properly is an important public health goal. However, it is a complex disease with several different risk factors and potential treatments. Physicians typically recommend changes in diet, increased exercise, and/or medication to treat symptoms, but it is difficult to determine how effective any one of these factors is in treating the disease. In this project, you will explore SuperLearner, Targeted Maximum Likelihood Estimation (TMLE), and Longitudinal Targeted Maximum Likelihood Estimation (LTMLE). Using a simulated dataset, you will explore whether taking blood pressure medication reduces mortality risk. 
+
+# Data
+
+This dataset was simulated using R (so it does not come from a previous study or other data source). It contains several variables:
+
+\begin{itemize}
+    \item \textbf{blood\_pressure\_medication}: Treatment indicator for whether the individual took blood pressure medication (0 for control, 1 for treatment)
+    \item \textbf{mortality}: Outcome indicator for whether the individual passed away from complications of heart disease (0 for no, 1 for yes)
+    \item \textbf{age}: Age at time 1
+    \item \textbf{sex\_at\_birth}: Sex assigned at birth (0 female, 1 male)
+    \item \textbf{simplified\_race}: Simplified racial category. (1: White/Caucasian, 2: Black/African American, 3: Latinx, 4: Asian American, \newline 5: Mixed Race/Other)
+    \item \textbf{income\_thousands}: Household income in thousands of dollars
+    \item \textbf{college\_educ}: Indicator for college education (0 for no, 1 for yes)
+    \item \textbf{bmi}: Body mass index (BMI)
+    \item \textbf{chol}: Cholesterol level
+    \item \textbf{blood\_pressure}: Systolic blood pressure 
+    \item \textbf{bmi\_2}: BMI measured at time 2
+    \item \textbf{chol\_2}: Cholesterol measured at time 2
+    \item \textbf{blood\_pressure\_2}: BP measured at time 2
+    \item \textbf{blood\_pressure\_medication\_2}: Whether the person took treatment at time period 2 
+\end{itemize}
+
+For the "SuperLearner" and "TMLE" portions, you can ignore any variable that ends in "\_2", we will reintroduce these for LTMLE.
+
+# SuperLearner
+
+## Modeling
+
+Fit a SuperLearner model to estimate the probability of someone dying from complications of heart disease, conditional on treatment and the relevant covariates. Do the following:
+
+\begin{enumerate}
+    \item Choose a library of at least 5 machine learning algorithms to evaluate. \textbf{Note}: We did not cover how to hyperparameter tune constituent algorithms within SuperLearner in lab, but you are free to do so if you like (though not required to for this exercise). 
+    \item Split your data into train and test sets.
+    \item Train SuperLearner
+    \item Report the risk and coefficient associated with each model, and the performance of the discrete winner and SuperLearner ensemble
+    \item Create a confusion matrix and report your overall accuracy, recall, and precision
+\end{enumerate}
+
+```{r}
+# explore data
+
+glimpse(heart_disease)
+```
+
+```{r}
+# Fit SuperLearner Model
+
+## sl lib
+listWrappers()
+###select SL.mean,SL.glmnet,SL.ranger, SL.ksvm, SL.biglasso
+
+## Train/Test split
+heart_disease_split <- initial_split(heart_disease, prop = 3/4)
+
+train <- training(heart_disease_split)
+y_train <- train$mortality
+x_train <- train %>%
+  select(-mortality, -bmi_2, -blood_pressure_2, -chol_2, -blood_pressure_medication_2)
+
+test <- testing(heart_disease_split)
+y_test <- test %>% select(mortality)
+x_test <- test %>%
+  select(-mortality, -bmi_2, -blood_pressure_2, -chol_2, -blood_pressure_medication_2)
+```
+
+```{r}
+## Train SuperLearner
+###1) 
+sl_mean <- SuperLearner(Y = y_train,
+                         X = x_train,
+                         family = binomial(),
+                         SL.library = "SL.mean")
+sl_mean
+
+###2)
+sl_glmenet <- SuperLearner(Y = y_train,
+                         X = x_train,
+                         family = binomial(),
+                         SL.library = "SL.glmnet")
+sl_glmenet
+
+###3)
+sl_ranger <- SuperLearner(Y = y_train,
+                         X = x_train,
+                         family = binomial(),
+                         SL.library = "SL.ranger")
+sl_ranger
+
+###4)
+sl_ksvm <- SuperLearner(Y = y_train,
+                         X = x_train,
+                         family = binomial(),
+                         SL.library = "SL.ksvm")
+sl_ksvm
+
+###5)
+sl_step <- SuperLearner(Y = y_train,
+                         X = x_train,
+                         family = binomial(),
+                         SL.library = "SL.step")
+sl_step
+
+## Risk and Coefficient of each model
+### SL.mean: 0.2496337  /  SL.glmnet: 0.2366779  / SL.ranger: 0.2308693  /  SL.ksvm: 0.2327669   /  SL.step: 0.236561 
+
+
+## Discrete winner and superlearner ensemble performance
+
+sl_libs = c('SL.mean','SL.glmnet','SL.ranger','SL.ksvm','SL.step')
+
+sl = SuperLearner(Y = y_train,
+                  X = x_train,
+                  family = binomial(),
+                  SL.library = sl_libs)
+sl
+
+#                   Risk       Coef
+#SL.mean_All   0.2496120 0.00000000
+#SL.glmnet_All 0.2364008 0.09538916
+#SL.ranger_All 0.2307689 0.60412337
+#SL.ksvm_All   0.2330686 0.22250712
+#SL.step_All   0.2365224 0.07798034
+```
+
+```{r}
+### Discrete winner
+sl_ranger$cvRisk[which.min(sl_ranger$cvRisk)] ## 0.2308693 
+
+
+### Superlearner ensemble
+## Confusion Matrix
+preds <- predict(sl,
+                 x_test,
+                 onlySL = TRUE)
+
+# start with y_test
+validation <- y_test %>%
+  # add our predictions
+  bind_cols(preds$pred[,1]) %>%
+  # rename columns
+  rename(obs = `mortality`,
+         pred = `...2`) %>%
+  mutate(pred = ifelse(pred >= .5, 
+                           1,
+                           0))
+
+head(validation)
+
+  #matrix
+caret::confusionMatrix(as.factor(validation$pred),
+                       as.factor(validation$obs))
+
+```
+
+## Discussion Questions
+
+\begin{enumerate}
+    \item Why should we, in general, prefer the SuperLearner ensemble to the discrete winner in cross-validation? Or in other words, what is the advantage of "blending" algorithms together and giving them each weights, rather than just using the single best algorithm (with best being defined as minimizing risk)?
+\end{enumerate}
+
+## SuperLearner ensemble uses cross-validation to estimate the performance of multiple machine learning models. It then creates an optimal weighted average of those models, aka an "ensemble", using the test data performance. This approach reduces bias compared to the discrete winner (especially in the case where the model is misspecified) by combining the best performing algorithms together.
+
+
+# Targeted Maximum Likelihood Estimation
+
+## Causal Diagram
+
+TMLE requires estimating two models:
+
+\begin{enumerate}
+    \item The outcome model, or the relationship between the outcome and the treatment/predictors, $P(Y|(A,W)$.
+    \item The propensity score model, or the relationship between assignment to treatment and predictors $P(A|W)$
+\end{enumerate}
+
+Using ggdag and daggity, draw a directed acylcic graph (DAG) that describes the relationships between the outcome, treatment, and covariates/predictors. Note, if you think there are covariates that are not related to other variables in the dataset, note this by either including them as freestanding nodes or by omitting them and noting omissions in your discussion.
+
+First, we create the DAG using only the covariates and predictors at Time 1.
+```{r}
+# DAG for TMLE
+theme_set(theme_dag())
+source("pretty_dag.R")
+
+tmle_dag <- dagify(Mortality ~ BP_Meds,
+                   Mortality ~ Age,
+                   Mortality ~ Cholesterol,
+                   Mortality ~ BMI,
+                   Mortality ~ Income,
+                   Mortality ~ Sex,
+                   BP_Meds ~ BP,
+                   BP_Meds ~ Income,
+                   BP ~ BMI,
+                   BP ~ Race,
+                   BP ~ Income,
+                   BP ~ Age,
+                   Cholesterol ~ BMI,
+                   BMI ~ Income,
+                   BMI ~ U_Lifestyle,
+                   Income ~ Race,
+                   Income ~ Sex,
+                   Income ~ Age,
+                   Income ~ Educ,
+                   Educ ~ Sex,
+                   Educ ~ Race,
+                   U_Lifestyle ~ Educ,
+                   Mortality ~ U_Other,
+                   Mortality ~ U_Lifestyle,
+                   BP ~ U_Lifestyle,
+                   Cholesterol ~ U_Lifestyle,
+                   BP ~ U_Lifestyle,
+                   exposure = "BP_Meds",
+                   outcome = "Mortality") %>%
+  tidy_dagitty() %>%
+  #pretty_dag() %>%
+  ggdag() +
+  geom_dag_edges() +
+  geom_dag_node(aes(color = "BP_Meds")) +
+  geom_dag_text(col = "darkgrey") +
+  theme(legend.position = "none") +
+  scale_color_manual(values=c("darkred", "lightgrey", "darkgrey", "navy"))
+
+tmle_dag
+```
+### Explaining decisions made in the DAG
+This DAG argues that Mortality is affected by blood pressure, cholesterol, BMI, age, income, sex, blood pressure medication, and unobserved factors. This is because high blood pressure and cholesterol lead to heart attacks and strokes. BMI affects mortality through its effects on blood pressure and cholesterol, *and* independently of those, through their unobserved effects on diseases like diabetes and cancer and through their unobserved impact on likelihood for needing a major surgery (e.g., gastric bypass or knee replacement), which are always dangerous. Age is related to mortality rates. Income affects mortality through unobserved mediators like stress, healthcare access, exposure to violence, and more. Research shows a 10+ life expectancy gap between the poorest and richest Americans. Sex is included because women tend to live longer than men. Blood pressure medication might affect morality by reducing blood pressure. Unobserved factors impacting mortality might include the presence of other diseases and mental illnesses.
+
+Whether or not someone takes blood pressure medication is affected by their blood pressure (are they even eligible to take it?) and income (do they have access to healthcare?).
+
+Blood pressure is affected by BMI, race, income, age, and unobserved factors. Income affects blood pressure indirectly through BMI, since low-income people tend to have higher BMIs because healthy foods cost more, and higher likelihood of living in a food desert, which further limit access to healthy food. I argue that income also directly affects blood pressure through the unobserved variable of stress. Many studies have confirmed that people of African descent have higher rates of hypertension (and earlier ages of onset) than other ethno-racial groups, even controlling for income. Lastly, blood pressure tends to rise as people get older, as an effect of the biological aging process. The unobserved factors I imagine affecting blood pressure are dietary preferences and habits unrelated to constraints posed by income, and whether one smokes. The former factor is also a contributor to BMI and cholesterol. The latter factor is a contributor to mortality more directly.
+
+There are Unobserved predictors that I left out of this model for the sake of visual comprehensibility. For example, there are unobserved predictors of income beyond education, sex, race, and age. Income and education might also affect the unobserved smoking prevalence. Also, there are more predictors of college attendance than sex and race, like childhood household income, presence of learning disabilities, immigration status, and more. And, there are probably more unobserved contributors to high blood pressure than those that I am aware of.
+
+## TMLE Estimation
+
+Use the `tmle` package to estimate a model for the effect of blood pressure medication on the probability of mortality. Do the following:
+
+\begin{enumerate}
+    \item Use the same SuperLearner library you defined earlier
+    \item Use the same outcome model and propensity score model that you specified in the DAG above. If in your DAG you concluded that it is not possible to make a causal inference from this dataset, specify a simpler model and note your assumptions for this step.
+    \item Report the average treatment effect and any other relevant statistics
+\end{enumerate}
+
+```{r}
+# Propensity Model for Treatment (medication): blood_pressure, income_thousands
+# Outcome Model (mortality): age, sex_at_birth, blood_pressure, chol, bmi, income_thousands, blood_pressure_medication, college_educ
+# Not including any variables whose effects on mortality or treatment are fully mediated by observed variables.
+
+# Prepare Data
+data_obs <- heart_disease %>%
+  rename(Y = mortality) %>%
+  rename(A = blood_pressure_medication) %>%
+  select(Y, A, age, sex_at_birth, blood_pressure, chol, bmi, income_thousands, college_educ)
+
+# Outcome
+Y <- data_obs %>% pull(Y)
+
+# Covariates
+W_A <- data_obs %>% select(-Y)
+```
+
+```{r}
+# Fit SL for Q step, initial estimate of the outcome
+#Q <- SuperLearner(Y = Y,
+#                  X = W_A,
+#                  family = binomial(),
+#                  SL.library = sl_libs)
+```
+
+```{r}
+W <- W_A %>% select(-A)
+A <- W_A$A
+
+#g <- SuperLearner(Y = A, 
+#                  X = W, 
+#                  family=binomial(), 
+#                  SL.library=sl_libs)
+```
+
+```{r}
+tmle_fit <-
+  tmle::tmle(Y = Y, 
+           A = A, 
+           W = W, 
+           Q.SL.library = sl_libs, 
+           g.SL.library = sl_libs) 
+
+tmle_fit
+```
+### Result:
+Additive Effect
+   Parameter Estimate:  -0.35408
+   Estimated Variance:  7.0898e-05
+              p-value:  <2e-16
+    95% Conf Interval: (-0.37059, -0.33758) 
+
+ Additive Effect among the Treated
+   Parameter Estimate:  -0.31966
+   Estimated Variance:  0.00014703
+              p-value:  <2e-16
+    95% Conf Interval: (-0.34342, -0.29589) 
+
+ Additive Effect among the Controls
+   Parameter Estimate:  -0.36802
+   Estimated Variance:  6.3477e-05
+              p-value:  <2e-16
+    95% Conf Interval: (-0.38364, -0.35241) 
+
+**Interpretation:** For all subjects, taking blood pressure medication at time 1 is associated with decreased mortality. However, this model does not account for variables at time 2; for that, we need to use the LTMLE method.
+
+## Discussion Questions
+
+\begin{enumerate}
+    \item What is a "double robust" estimator? Why does it provide a guarantee of consistency if either the outcome model or propensity score model is correctly specified? Or in other words, why does mispecifying one of the models not break the analysis? \textbf{Hint}: When answering this question, think about how your introductory statistics courses emphasized using theory to determine the correct outcome model, and in this course how we explored the benefits of matching.
+\end{enumerate}
+**Answer:** TMLE is a double robust estimator because it tries to determine and use the best model for predicting exposure to treatment and the best model for predicting the outcome. That gives us two chances at a correctly specified model, and the way TMLE works, 1 correctly specified model is sufficient. 
+
+
+# LTMLE Estimation
+
+Now imagine that everything you measured up until now was in "time period 1". Some people either choose not to or otherwise lack access to medication in that time period, but do start taking the medication in time period 2. Imagine we measure covariates like BMI, blood pressure, and cholesterol at that time for everyone in the study (indicated by a "_2" after the covariate name). 
+
+## Causal Diagram
+
+Update your causal diagram to incorporate this new information. \textbf{Note}: If your groups divides up sections and someone is working on LTMLE separately from TMLE then just draw a causal diagram even if it does not match the one you specified above.
+
+\textbf{Hint}: Check out slide 27 from Maya's lecture, or slides 15-17 from Dave's second slide deck in week 8 on matching.
+
+\textbf{Hint}: Keep in mind that any of the variables that end in "\_2" are likely affected by both the previous covariates and the first treatment when drawing your DAG.
+
+```{r}
+# DAG for LTMLE
+theme_set(theme_dag())
+source("pretty_dag.R")
+
+tmle_dag <- dagify(Mortality ~ BP_Meds,
+                   Mortality ~ Age,
+                   Mortality ~ Cholesterol,
+                   Mortality ~ BMI,
+                   Mortality ~ Income,
+                   Mortality ~ Sex,
+                   BP_Meds ~ BP,
+                   BP_Meds ~ Income,
+                   BP ~ BMI,
+                   BP ~ Race,
+                   BP ~ Income,
+                   BP ~ Age,
+                   Cholesterol ~ BMI,
+                   Cholesterol_2 ~ BMI,
+                   Cholesterol_2 ~ BMI_2,
+                   Cholesterol_2 ~ Cholesterol,
+                   BMI ~ Income,
+                   BMI ~ U_Lifestyle, 
+                   BMI_2 ~ U_Lifestyle,
+                   BMI_2 ~ U_Lifestyle,
+                   BMI_2 ~ BMI,
+                   Income ~ Race,
+                   Income ~ Sex,
+                   Income ~ Age,
+                   Income ~ Educ,
+                   Educ ~ Sex,
+                   Educ ~ Race,
+                   U_Lifestyle ~ Educ,
+                   Mortality ~ U_Other,
+                   Mortality ~ U_Lifestyle,
+                   BP ~ U_Lifestyle,
+                   Cholesterol ~ U_Lifestyle,
+                   BP ~ U_Lifestyle,
+                   BP_2 ~ U_Lifestyle,
+                   BP_2 ~ BP,
+                   exposure = "BP_Meds",
+                   outcome = "Mortality") %>%
+  tidy_dagitty() %>%
+  #pretty_dag() %>%
+  ggdag() +
+  geom_dag_edges() +
+  geom_dag_node(aes(color = "BP_Meds")) +
+  geom_dag_text(col = "darkgrey") +
+  theme(legend.position = "none") +
+  scale_color_manual(values=c("darkred", "lightgrey", "darkgrey", "navy"))
+```
+
+## LTMLE Estimation
+
+Use the `ltmle` package for this section. First fit a "naive model" that \textbf{does not} control for the time-dependent confounding. Then run a LTMLE model that does control for any time dependent confounding. Follow the same steps as in the TMLE section. Do you see a difference between the two estimates?
+
+```{r}
+data_obs_ltmle <- data_obs %>%
+  rename(W1 = age, W2 = sex_at_birth, W3 = income_thousands, W4 = college_educ) %>%
+  select(W1, W2, W3, W4, A, Y)
+result <- ltmle(data_obs_ltmle, Anodes = "A", Ynodes = "Y", abar = 1)
+```
+
+```{r}
+## Naive Model (no time-dependent confounding) estimate
+A <- data_obs$blood_pressure_medication
+Y <- data_obs$mortality
+data <- data_obs_ltmle %>%
+  select(W1, W2, W3, W4, A, Y)
+result <- ltmle(data, Anodes="A", Lnodes=NULL, Ynodes="Y", abar=1, SL.library=sl_libs)
+```
+
+```{r}
+summary(result)
+```
+
+Parameter Estimate:  0.2483 
+    Estimated Std Err:  0.011094 
+              p-value:  <2e-16 
+    95% Conf Interval: (0.22656, 0.27004) 
+
+```{r}
+## LTMLE estimate -------- match up all the datasets
+data_new <- heart_disease %>%
+rename(Y = mortality) %>%
+rename(A1 = blood_pressure_medication) %>%
+rename(A2 = blood_pressure_medication_2) %>%
+rename(L1 = bmi_2) %>%
+rename(L2 = chol_2) %>%
+rename(L3 = blood_pressure_2) %>%
+select(Y, A1, L1, L2, L3, A2, sex_at_birth, simplified_race, income_thousands, college_educ, bmi)
+sl_libs <- c('SL.glmnet', 'SL.glm', 'SL.mean', 'SL.step')
+result_ltmle <- ltmle(data_new, Anodes=c("A1", "A2"), Lnodes =c("L1", "L2", "L3"), Ynodes = "Y", abar=c(1,1), SL.library = sl_libs)
+summary(result_ltmle)
+```
+
+Results for Time-Varying Model:
+Parameter Estimate:  0.2567
+    Estimated Std Err:  0.011546
+              p-value:  <2e-14 
+    95% Conf Interval: (0.2354, 0.2846) 
+    
+The results are similar for both models (the naive and the full LTMLE) and the parameter estimates fit within each others confidence intervals at both time points. The data suggests that two different time points aren't affected by time varying confounders (although it could be interesting if we did it with more time points). It is plausible that BMI, cholesterol, and blood pressure readings stay the same over time. 
+
+## Discussion Questions
+
+\begin{enumerate}
+    \item What sorts of time-dependent confounding should we be especially worried about? For instance, would we be concerned about a running variable for age the same way we might be concerned about blood pressure measured at two different times?
+\end{enumerate}
+We should be really worried about time-dependent confounding with variables that are not static and change at different rates that aren't predictable. Things like education, race, sex at birth, etc. will not change over the course of the experiment, but other factors like a person's BMI or age will. The ones that are particular problems are ones that do not change at the same rate over time. Age does, which satisfies the assumption, but something like income or cholesterol levels can change in different ways, in different directions, in different magnitudes. 
